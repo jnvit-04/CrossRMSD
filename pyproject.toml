@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crossrmsd"
+version = "0.9.1"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23"]
+
+[project.scripts]
+crossrmsd = "crossrmsd.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+crossrmsd = ["data/*.tsv"]
