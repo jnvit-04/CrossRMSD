@@ -88,7 +88,7 @@ class ComparisonResult:
     frames_a: int
     frames_b: int
     stats: RmsdStats
+    output_file: str
     kde_file: str
-    pairs_file: str
     xpm_file: str
-    bandwidth: float
+    bandwidth: float | None

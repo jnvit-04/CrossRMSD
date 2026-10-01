@@ -32,8 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="crossrmsd",
         description=(
-            "Calculate intra- or inter-trajectory Cross-RMSD distributions from "
-            "prepared multi-model PDB trajectories."
+            "Calculate pairwise intra- or inter-trajectory RMSDs from prepared "
+            "multi-model PDB trajectories."
         ),
     )
     parser.add_argument("--version", action="version", version=f"crossrmsd {__version__}")
@@ -50,7 +50,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Selection used for RMSD measurement. Default: the --fit selection.",
     )
     parser.add_argument("--index", type=Path, help="Optional GROMACS .ndx file.")
-    parser.add_argument("--out", required=True, type=Path, help="Output folder.")
+    parser.add_argument(
+        "--out", required=True, type=Path, metavar="FILE",
+        help=(
+            "Primary pairwise RMSD CSV. With more than one comparison, the "
+            "comparison name is appended before the extension."
+        ),
+    )
+    parser.add_argument(
+        "--log", type=Path, metavar="FILE",
+        help="Optional run log. Terminal reporting is always shown.",
+    )
+    parser.add_argument(
+        "--kde", action="store_true",
+        help="Also write a KDE CSV derived from each pairwise RMSD output.",
+    )
+    parser.add_argument(
+        "--xpm", action="store_true",
+        help="Also write a GROMACS gmx rms-compatible XPM matrix for each comparison.",
+    )
+    parser.add_argument(
+        "--write-selection", action="store_true",
+        help="Write a selected-atom audit CSV next to --out.",
+    )
     parser.add_argument(
         "--units", choices=("nm", "angstrom"), default="nm",
         help="RMSD output unit (default: nm).",
@@ -77,18 +99,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target frames per vectorized Kabsch batch (default: 2048).",
     )
     parser.add_argument(
-        "--write-pairs", action="store_true",
-        help="Write one CSV row per frame pair.",
-    )
-    parser.add_argument(
-        "--write-selection", action="store_true",
-        help="Write selected_atoms.csv.",
-    )
-    parser.add_argument(
-        "--write-xpm", action="store_true",
-        help="Write a GROMACS gmx rms-compatible RMSD XPM matrix for each comparison.",
-    )
-    parser.add_argument(
         "--xpm-levels", type=int, default=80,
         help="Number of XPM color levels, matching gmx rms default 80.",
     )
@@ -101,24 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional XPM maximum in nm, analogous to gmx rms -max.",
     )
     parser.add_argument(
-        "--out-central", "--central", dest="central_output", nargs="?",
-        const=Path("central_structure.pdb"), type=Path,
-        help=(
-            "Write the exact Campos-Baptista central sampled frame. Optionally give "
-            "a PDB filename; default: central_structure.pdb inside --out."
-        ),
+        "--central", dest="central_output", type=Path, metavar="FILE",
+        help="Write the exact Campos-Baptista central sampled frame to FILE.",
     )
     parser.add_argument(
-        "--out-centroid", dest="centroid_output", nargs="?",
-        const=Path("centroid_structure.pdb"), type=Path,
-        help=(
-            "Write an iterative generalized-Procrustes synthetic centroid for the "
-            "RMSD selection. Optionally give a PDB filename."
-        ),
+        "--centroid", dest="centroid_output", type=Path, metavar="FILE",
+        help="Write an iterative generalized-Procrustes synthetic centroid to FILE.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="Validate inputs and selections without calculating RMSD.",
+        help="Validate inputs and selections without calculating RMSDs.",
     )
     return parser
 
@@ -140,21 +142,22 @@ def main(argv: list[str] | None = None) -> int:
         and args.xpm_max_nm <= args.xpm_min_nm
     ):
         parser.error("--xpm-max must be greater than --xpm-min.")
+    if args.log is not None and args.log.expanduser().resolve() == args.out.expanduser().resolve():
+        parser.error("--log and --out must name different files.")
 
     configure_cpu_limit(args.ncpu)
     from crossrmsd.analysis import run_crossrmsd
     from crossrmsd.io import RunLog
 
-    args.out.mkdir(parents=True, exist_ok=True)
     command_items = sys.argv if argv is None else ["crossrmsd", *argv]
     command = " ".join(shlex.quote(item) for item in command_items)
     rmsd_expression = args.rmsd if args.rmsd is not None else args.fit
 
-    with RunLog(args.out / "crossrmsd.log") as log:
+    with RunLog(args.log) as log:
         try:
             run_crossrmsd(
                 trajectory_paths=args.trajectory,
-                out_dir=args.out,
+                output_file=args.out,
                 fit_expression=args.fit,
                 rmsd_expression=rmsd_expression,
                 index_path=args.index,
@@ -165,9 +168,9 @@ def main(argv: list[str] | None = None) -> int:
                 mass_weighted=args.mass_weighted,
                 mass_database=args.mass_database,
                 verbose=args.verbose,
-                write_pairs=args.write_pairs,
+                write_kde=args.kde,
                 write_selection=args.write_selection,
-                write_xpm=args.write_xpm,
+                write_xpm=args.xpm,
                 xpm_levels=args.xpm_levels,
                 xpm_min_nm=args.xpm_min_nm,
                 xpm_max_nm=args.xpm_max_nm,

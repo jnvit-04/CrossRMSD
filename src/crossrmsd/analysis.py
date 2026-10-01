@@ -11,11 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from crossrmsd.database import load_atomic_masses
-from crossrmsd.centroid import (
-    generalized_procrustes_centroid,
-    write_centroid_csv,
-    write_centroid_pdb,
-)
+from crossrmsd.centroid import generalized_procrustes_centroid, write_centroid_pdb
 from crossrmsd.central import (
     add_pairwise_squared_rmsd_sums,
     central_frame_index,
@@ -27,10 +23,8 @@ from crossrmsd.io import (
     ReadProgressReporter,
     RunLog,
     timestamp,
-    write_central_structure_csv,
-    write_comparisons_csv,
     write_kde_csv,
-    write_pairs_csv,
+    write_pairwise_csv,
     write_selected_atoms_csv,
 )
 from crossrmsd.kde import gaussian_kde_curve
@@ -333,9 +327,48 @@ def _xpm_title(rmsd_expression: str) -> str:
     return "CrossRMSD RMSD matrix"
 
 
+def _comparison_output_path(base: Path, comparison: str, multiple: bool) -> Path:
+    """Return the primary CSV path for one comparison."""
+
+    base = base.expanduser()
+    if not multiple:
+        return base
+    if base.suffix:
+        return base.with_name(f"{base.stem}_{comparison}{base.suffix}")
+    return base.with_name(f"{base.name}_{comparison}")
+
+
+def _kde_output_path(primary: Path) -> Path:
+    return primary.with_name(f"{primary.stem}_kde.csv")
+
+
+def _xpm_output_path(primary: Path) -> Path:
+    return primary.with_suffix(".xpm")
+
+
+def _selection_output_path(base: Path) -> Path:
+    base = base.expanduser()
+    return base.with_name(f"{base.stem}_selection.csv")
+
+
+
+def _validate_output_paths(items: list[tuple[str, Path]]) -> None:
+    """Reject accidental collisions between requested and derived outputs."""
+
+    seen: dict[str, str] = {}
+    for description, path in items:
+        key = str(path.expanduser().resolve(strict=False))
+        previous = seen.get(key)
+        if previous is not None:
+            raise ValueError(
+                f"Output path collision: {previous} and {description} both resolve to {path}."
+            )
+        seen[key] = description
+
+
 def run_crossrmsd(
     trajectory_paths: list[Path],
-    out_dir: Path,
+    output_file: Path,
     fit_expression: str,
     rmsd_expression: str,
     index_path: Path | None,
@@ -346,7 +379,7 @@ def run_crossrmsd(
     mass_weighted: bool,
     mass_database: Path | None,
     verbose: bool,
-    write_pairs: bool,
+    write_kde: bool,
     write_selection: bool,
     write_xpm: bool,
     xpm_levels: int,
@@ -382,6 +415,9 @@ def run_crossrmsd(
     )
 
     plan = _comparison_plan(trajectories)
+    multiple_outputs = len(plan) > 1
+    output_paths: dict[str, Path] = {}
+
     log.section("Comparison plan")
     log.write(
         "Mode: intra-trajectory Cross-RMSD"
@@ -392,8 +428,11 @@ def run_crossrmsd(
         a = trajectories[left]
         b = trajectories[right]
         name = f"{a.label}_intra" if same_object else f"{a.label}_vs_{b.label}"
+        primary_path = _comparison_output_path(output_file, name, multiple_outputs)
+        output_paths[name] = primary_path
         log.write(
-            f"{name}: {expected_pair_count(a.n_frames, b.n_frames, same_object):,} frame pairs"
+            f"{name}: {expected_pair_count(a.n_frames, b.n_frames, same_object):,} "
+            f"frame pairs -> {primary_path}"
         )
 
     if central_output is not None and len(trajectories) > 1:
@@ -402,10 +441,33 @@ def run_crossrmsd(
             "in the exact Campos-Baptista dispersion."
         )
 
+    path_items: list[tuple[str, Path]] = [
+        (f"primary output {name}", path) for name, path in output_paths.items()
+    ]
+    if write_kde:
+        path_items.extend(
+            (f"KDE output {name}", _kde_output_path(path))
+            for name, path in output_paths.items()
+        )
+    if write_xpm:
+        path_items.extend(
+            (f"XPM output {name}", _xpm_output_path(path))
+            for name, path in output_paths.items()
+        )
     if write_selection:
-        selection_path = out_dir / "selected_atoms.csv"
+        path_items.append(("selected-atom audit", _selection_output_path(output_file)))
+    if central_output is not None:
+        path_items.append(("central structure", central_output))
+    if centroid_output is not None:
+        path_items.append(("centroid structure", centroid_output))
+    if log.path is not None:
+        path_items.append(("run log", log.path))
+    _validate_output_paths(path_items)
+
+    if write_selection:
+        selection_path = _selection_output_path(output_file)
         write_selected_atoms_csv(selection_path, trajectories, fit_indices, rmsd_indices)
-        log.write(f"Selected-atom audit: {selection_path.name}")
+        log.write(f"Selected-atom audit: {selection_path}")
 
     if dry_run:
         log.section("Dry run")
@@ -436,24 +498,24 @@ def run_crossrmsd(
     else:
         log.write("RMSD definition: unweighted geometric RMSD")
     log.write(f"Frame stride: {stride:,}")
+    log.write("Primary CSV frame identifiers: zero-based source-frame indices")
     log.write(f"Maximum CPUs: {ncpu}")
     log.write(f"Numerical-library thread limit: {ncpu}")
     log.write(f"Chunk size: {chunk_size:,} target frames")
     log.write(f"Verbose progress: {'yes' if verbose else 'no'}")
-    log.write(f"Write every frame pair: {'yes' if write_pairs else 'no'}")
+    log.write(f"Write KDE CSV: {'yes' if write_kde else 'no'}")
     log.write(f"Write GROMACS-compatible XPM: {'yes' if write_xpm else 'no'}")
     if write_xpm:
         log.write(f"XPM levels: {xpm_levels}")
         log.write("XPM RMSD unit: nm (matching gmx rms)")
     log.write(f"Campos-Baptista central frame: {'yes' if central_output is not None else 'no'}")
     log.write(f"Generalized-Procrustes centroid: {'yes' if centroid_output is not None else 'no'}")
-    log.write(f"KDE points: {_KDE_POINTS}")
+    if write_kde:
+        log.write(f"KDE points: {_KDE_POINTS}")
 
     if centroid_output is not None:
         log.section("Generalized-Procrustes centroid")
-        centroid_path = centroid_output
-        if not centroid_path.is_absolute():
-            centroid_path = out_dir / centroid_path
+        centroid_path = centroid_output.expanduser()
         centroid_result = generalized_procrustes_centroid(
             [
                 trajectory.coords_angstrom[:, indices, :]
@@ -470,21 +532,12 @@ def run_crossrmsd(
             rmsd_atoms,
             centroid_result.rmsd_coords_angstrom,
         )
-        centroid_csv = "centroid_structure.csv"
-        write_centroid_csv(
-            out_dir / centroid_csv,
-            [trajectory.label for trajectory in trajectories],
-            sum(trajectory.n_frames for trajectory in trajectories),
-            centroid_result,
-            str(centroid_path),
-        )
         log.write("Definition: iterative generalized-Procrustes mean after fit-selection alignment.")
         log.write("Output PDB contains the RMSD selection atoms only; it is a synthetic structure.")
         log.write(f"Frames averaged: {sum(t.n_frames for t in trajectories):,}")
         log.write(f"Iterations: {centroid_result.iterations}")
         log.write(f"Final fit-coordinate shift: {centroid_result.final_shift_angstrom:.6g} Å")
         log.write(f"Structure: {centroid_path}")
-        log.write(f"Details: {centroid_csv}")
 
     n_trajectories = len(trajectories)
     pooled_central_sums = (
@@ -500,7 +553,7 @@ def run_crossrmsd(
         comparison = f"{a.label}_intra" if same_object else f"{a.label}_vs_{b.label}"
         kind = "intra" if same_object else "inter"
         total_pairs = expected_pair_count(a.n_frames, b.n_frames, same_object)
-
+        primary_path = output_paths[comparison]
 
         log.section(f"Calculation: {comparison}")
         log.write(f"Trajectory {a.label}: {a.path}")
@@ -532,40 +585,38 @@ def run_crossrmsd(
                 same_object,
             )
 
-        log.write("Calculating summary statistics and KDE...")
         post_started = time.perf_counter()
         stats = summarize(values)
-        grid, density, bandwidth = gaussian_kde_curve(values, points=_KDE_POINTS)
-
-        kde_name = f"kde_{comparison}.csv"
-        write_kde_csv(
-            out_dir / kde_name,
-            comparison=comparison,
-            grid=grid,
-            density=density,
+        log.write(f"Writing {stats.n_pairs:,} pairwise RMSD rows to {primary_path}...")
+        write_pairwise_csv(
+            primary_path,
+            trajectory_a=a,
+            trajectory_b=b,
+            values=values,
+            same_object=same_object,
             unit=unit,
         )
 
-        pairs_name = ""
-        if write_pairs:
-            pairs_name = f"pairs_{comparison}.csv"
-            log.write(f"Writing {stats.n_pairs:,} frame-pair rows...")
-            write_pairs_csv(
-                out_dir / pairs_name,
+        bandwidth: float | None = None
+        kde_name = ""
+        if write_kde:
+            grid, density, bandwidth = gaussian_kde_curve(values, points=_KDE_POINTS)
+            kde_path = _kde_output_path(primary_path)
+            write_kde_csv(
+                kde_path,
                 comparison=comparison,
-                trajectory_a=a,
-                trajectory_b=b,
-                values=values,
-                same_object=same_object,
+                grid=grid,
+                density=density,
                 unit=unit,
             )
+            kde_name = str(kde_path)
 
         xpm_name = ""
         if write_xpm:
-            xpm_name = f"rmsd_matrix_{comparison}.xpm"
+            xpm_path = _xpm_output_path(primary_path)
             values_nm = values if unit == "nm" else values * 0.1
             write_gromacs_xpm(
-                out_dir / xpm_name,
+                xpm_path,
                 values_nm=values_nm,
                 trajectory_a=a,
                 trajectory_b=b,
@@ -575,6 +626,7 @@ def run_crossrmsd(
                 user_min_nm=xpm_min_nm,
                 user_max_nm=xpm_max_nm,
             )
+            xpm_name = str(xpm_path)
 
         result = ComparisonResult(
             name=comparison,
@@ -586,8 +638,8 @@ def run_crossrmsd(
             frames_a=a.n_frames,
             frames_b=b.n_frames,
             stats=stats,
+            output_file=str(primary_path),
             kde_file=kde_name,
-            pairs_file=pairs_name,
             xpm_file=xpm_name,
             bandwidth=bandwidth,
         )
@@ -599,16 +651,14 @@ def run_crossrmsd(
         log.write(f"  Mean RMSD: {stats.mean:.6f} {unit_symbol}")
         log.write(f"  Median RMSD: {stats.median:.6f} {unit_symbol}")
         log.write(f"  Standard deviation: {stats.sd:.6f} {unit_symbol}")
-        log.write(f"  KDE bandwidth: {bandwidth:.6f} {unit_symbol}")
-        log.write(f"  KDE data: {kde_name}")
-        if pairs_name:
-            log.write(f"  Frame-pair data: {pairs_name}")
+        log.write(f"  Pairwise data: {primary_path}")
+        if bandwidth is not None:
+            log.write(f"  KDE bandwidth: {bandwidth:.6f} {unit_symbol}")
+            log.write(f"  KDE data: {kde_name}")
         if xpm_name:
             log.write(f"  GROMACS-compatible XPM: {xpm_name}")
         log.write(f"  RMSD calculation time: {rmsd_elapsed:.2f} seconds")
-        log.write(
-            f"  Statistics/KDE/output time: {time.perf_counter() - post_started:.2f} seconds"
-        )
+        log.write(f"  Statistics/output time: {time.perf_counter() - post_started:.2f} seconds")
 
     # Multi-trajectory normal mode does not calculate intra comparisons. Exact
     # pooled central scoring needs those within-trajectory contributions as well.
@@ -628,9 +678,7 @@ def run_crossrmsd(
                 target_calc=rmsd_stacks[index],
                 chunk_size=chunk_size,
                 same_object=True,
-                progress=ProgressReporter(
-                    log, f"{trajectory.label}_intra_aux", verbose
-                ),
+                progress=ProgressReporter(log, f"{trajectory.label}_intra_aux", verbose),
                 fit_weights=fit_weights,
                 rmsd_weights=rmsd_weights,
             )
@@ -659,26 +707,13 @@ def run_crossrmsd(
 
         central_trajectory = trajectories[best_trajectory_index]
         d2 = dispersion(best_sum_squared, total_structures - 1)
-        central_path = central_output
-        if central_path is None:
+        if central_output is None:
             raise AssertionError("Central output path was not configured.")
-        if not central_path.is_absolute():
-            central_path = out_dir / central_path
+        central_path = central_output.expanduser()
         extract_pdb_model(
             central_trajectory.path,
             int(central_trajectory.source_frame_indices[best_frame_index]),
             central_path,
-        )
-        csv_name = "central_structure.csv"
-        write_central_structure_csv(
-            out_dir / csv_name,
-            trajectory=central_trajectory,
-            retained_frame_index=best_frame_index,
-            sum_squared_rmsd=best_sum_squared,
-            dispersion_squared=d2,
-            structures_compared=total_structures - 1,
-            unit=unit,
-            pdb_file=str(central_path),
         )
         log.section("Campos-Baptista central frame")
         log.write(
@@ -694,12 +729,10 @@ def run_crossrmsd(
         log.write(f"D^2 dispersion: {d2:.8g} {unit_symbol}^2")
         log.write(f"D dispersion: {d2 ** 0.5:.8g} {unit_symbol}")
         log.write(f"Structure: {central_path}")
-        log.write(f"Details: {csv_name}")
 
-    comparisons_path = out_dir / "comparisons.csv"
-    write_comparisons_csv(comparisons_path, results, unit)
     log.section("Finished")
-    log.write(f"Comparison summary: {comparisons_path.name}")
+    for result in results:
+        log.write(f"Primary output ({result.name}): {result.output_file}")
     log.write("No raster images were generated.")
     log.write(f"Completed: {timestamp()}")
     log.write(f"Total elapsed time: {time.perf_counter() - started:.2f} seconds")

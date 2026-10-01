@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -135,36 +134,3 @@ def write_centroid_pdb(
                 f"  1.00  0.00          {atom.element[:2]:>2s}\n"
             )
         handle.write("END\n")
-
-
-def write_centroid_csv(
-    path: Path,
-    trajectory_labels: list[str],
-    frame_count: int,
-    result: CentroidResult,
-    pdb_file: str,
-) -> None:
-    """Write convergence/provenance information for the synthetic centroid."""
-
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "method",
-                "trajectories",
-                "frames",
-                "iterations",
-                "final_fit_shift_angstrom",
-                "pdb_file",
-            ]
-        )
-        writer.writerow(
-            [
-                "iterative generalized Procrustes mean",
-                "+".join(trajectory_labels),
-                frame_count,
-                result.iterations,
-                f"{result.final_shift_angstrom:.10g}",
-                pdb_file,
-            ]
-        )

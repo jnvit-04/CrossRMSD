@@ -1,4 +1,4 @@
-"""Human-readable logging, terminal progress, and flat CSV outputs."""
+"""Human-readable logging, terminal progress, and CSV outputs."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from crossrmsd.models import AtomRecord, ComparisonResult, Trajectory
+from crossrmsd.models import AtomRecord, Trajectory
 
 
 def format_duration(seconds: float) -> str:
@@ -23,13 +23,24 @@ def format_duration(seconds: float) -> str:
 
 
 class RunLog:
-    """Write readable messages to the terminal and ``crossrmsd.log``."""
+    """Write readable messages to the terminal and, optionally, a log file."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path | None = None) -> None:
         self.path = path
-        self._handle = path.open("w", encoding="utf-8")
+        self._handle = None
+        if path is not None:
+            path = path.expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.path = path
+            self._handle = path.open("w", encoding="utf-8")
         self._progress_active = False
         self._progress_width = 0
+
+    def _write_file(self, text: str) -> None:
+        if self._handle is None:
+            return
+        self._handle.write(text + "\n")
+        self._handle.flush()
 
     def _clear_terminal_progress(self) -> None:
         if self._progress_active and sys.stdout.isatty():
@@ -40,8 +51,7 @@ class RunLog:
     def write(self, text: str = "") -> None:
         self._clear_terminal_progress()
         print(text)
-        self._handle.write(text + "\n")
-        self._handle.flush()
+        self._write_file(text)
 
     def progress(self, text: str) -> None:
         """Show a changing progress line without filling an interactive terminal."""
@@ -53,14 +63,12 @@ class RunLog:
             self._progress_width = width
         else:
             print(text)
-            self._handle.write(text + "\n")
-            self._handle.flush()
+            self._write_file(text)
 
     def finish_progress(self, text: str) -> None:
         self._clear_terminal_progress()
         print(text)
-        self._handle.write(text + "\n")
-        self._handle.flush()
+        self._write_file(text)
 
     def section(self, title: str) -> None:
         self.write()
@@ -69,7 +77,8 @@ class RunLog:
 
     def close(self) -> None:
         self._clear_terminal_progress()
-        self._handle.close()
+        if self._handle is not None:
+            self._handle.close()
 
     def __enter__(self) -> "RunLog":
         return self
@@ -167,59 +176,6 @@ class ProgressReporter:
         self.last_update = now
 
 
-def write_comparisons_csv(
-    path: Path,
-    results: list[ComparisonResult],
-    unit: str,
-) -> None:
-    """Write one compact machine-readable row per comparison."""
-
-    suffix = "nm" if unit == "nm" else "angstrom"
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "comparison",
-                "comparison_type",
-                "trajectory_a",
-                "trajectory_a_file",
-                "trajectory_b",
-                "trajectory_b_file",
-                "frames_a",
-                "frames_b",
-                "frame_pairs",
-                f"mean_{suffix}",
-                f"standard_deviation_{suffix}",
-                f"median_{suffix}",
-                f"kde_bandwidth_{suffix}",
-                "kde_file",
-                "pairs_file",
-                "xpm_file",
-            ]
-        )
-        for result in results:
-            writer.writerow(
-                [
-                    result.name,
-                    result.kind,
-                    result.label_a,
-                    str(result.path_a),
-                    result.label_b,
-                    str(result.path_b),
-                    result.frames_a,
-                    result.frames_b,
-                    result.stats.n_pairs,
-                    f"{result.stats.mean:.8f}",
-                    f"{result.stats.sd:.8f}",
-                    f"{result.stats.median:.8f}",
-                    f"{result.bandwidth:.8f}",
-                    result.kde_file,
-                    result.pairs_file,
-                    result.xpm_file,
-                ]
-            )
-
-
 def write_kde_csv(
     path: Path,
     comparison: str,
@@ -227,10 +183,11 @@ def write_kde_csv(
     density: np.ndarray,
     unit: str,
 ) -> None:
-    """Write a smooth Cross-RMSD distribution without creating an image."""
+    """Write a smooth CrossRMSD distribution without creating an image."""
 
     value_name = "rmsd_nm" if unit == "nm" else "rmsd_angstrom"
     density_name = "density_per_nm" if unit == "nm" else "density_per_angstrom"
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["comparison", value_name, density_name])
@@ -238,51 +195,48 @@ def write_kde_csv(
             writer.writerow([comparison, f"{x:.8f}", f"{y:.12g}"])
 
 
-def write_pairs_csv(
+def write_pairwise_csv(
     path: Path,
-    comparison: str,
     trajectory_a: Trajectory,
     trajectory_b: Trajectory,
     values: np.ndarray,
     same_object: bool,
     unit: str,
 ) -> None:
-    """Write optional one-row-per-frame-pair RMSD values."""
+    """Write the primary one-row-per-frame-pair RMSD output.
+
+    Only source-frame indices are written. They are zero-based and refer directly
+    to the original input trajectories before ``--stride`` subsampling.
+    """
 
     value_name = "rmsd_nm" if unit == "nm" else "rmsd_angstrom"
+    if same_object:
+        header = ["source_frame_i", "source_frame_j", value_name]
+    else:
+        header = [
+            f"source_frame_{trajectory_a.label}",
+            f"source_frame_{trajectory_b.label}",
+            value_name,
+        ]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
     cursor = 0
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "comparison",
-                "trajectory_a",
-                "retained_frame_a_1based",
-                "source_frame_a_0based",
-                "trajectory_b",
-                "retained_frame_b_1based",
-                "source_frame_b_0based",
-                value_name,
-            ]
-        )
+        writer.writerow(header)
         for frame_a in range(trajectory_a.n_frames):
             start = frame_a + 1 if same_object else 0
             for frame_b in range(start, trajectory_b.n_frames):
                 writer.writerow(
                     [
-                        comparison,
-                        trajectory_a.label,
-                        frame_a + 1,
                         int(trajectory_a.source_frame_indices[frame_a]),
-                        trajectory_b.label,
-                        frame_b + 1,
                         int(trajectory_b.source_frame_indices[frame_b]),
                         f"{values[cursor]:.8f}",
                     ]
                 )
                 cursor += 1
     if cursor != values.size:
-        raise ValueError("Internal error while writing frame-pair RMSD values.")
+        raise ValueError("Internal error while writing pairwise RMSD values.")
 
 
 def write_selected_atoms_csv(
@@ -291,8 +245,9 @@ def write_selected_atoms_csv(
     fit_indices: list[np.ndarray],
     rmsd_indices: list[np.ndarray],
 ) -> None:
-    """Write optional exact fit and RMSD selections for auditing."""
+    """Write the exact fit and RMSD selections for auditing."""
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
@@ -329,53 +284,3 @@ def timestamp() -> str:
     """Return a readable local timestamp for logs."""
 
     return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-def write_central_structure_csv(
-    path: Path,
-    trajectory: Trajectory,
-    retained_frame_index: int,
-    sum_squared_rmsd: float,
-    dispersion_squared: float,
-    structures_compared: int,
-    unit: str,
-    pdb_file: str,
-) -> None:
-    """Write the exact Campos-Baptista central-frame result."""
-
-    suffix = "nm" if unit == "nm" else "angstrom"
-    time_ps = ""
-    if trajectory.frame_times_ps is not None:
-        time_ps = f"{trajectory.frame_times_ps[retained_frame_index]:.8g}"
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "method",
-                "trajectory",
-                "trajectory_file",
-                "retained_frame_1based",
-                "source_frame_0based",
-                "time_ps",
-                f"sum_squared_rmsd_{suffix}2",
-                f"dispersion_D2_{suffix}2",
-                f"dispersion_D_{suffix}",
-                "structures_compared",
-                "pdb_file",
-            ]
-        )
-        writer.writerow(
-            [
-                "Campos-Baptista minimum mean squared pairwise RMSD dispersion",
-                trajectory.label,
-                str(trajectory.path),
-                retained_frame_index + 1,
-                int(trajectory.source_frame_indices[retained_frame_index]),
-                time_ps,
-                f"{sum_squared_rmsd:.10g}",
-                f"{dispersion_squared:.10g}",
-                f"{dispersion_squared ** 0.5:.10g}",
-                structures_compared,
-                pdb_file,
-            ]
-        )
