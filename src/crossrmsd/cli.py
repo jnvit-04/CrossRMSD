@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.log is not None and args.log.expanduser().resolve() == args.out.expanduser().resolve():
         parser.error("--log and --out must name different files.")
 
-    configure_cpu_limit(args.ncpu)
+    configure_cpu_limit(1)
     from crossrmsd.analysis import run_crossrmsd
     from crossrmsd.io import RunLog
 

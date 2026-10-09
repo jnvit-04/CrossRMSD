@@ -500,7 +500,7 @@ def run_crossrmsd(
     log.write(f"Frame stride: {stride:,}")
     log.write("Primary CSV frame identifiers: zero-based source-frame indices")
     log.write(f"Maximum CPUs: {ncpu}")
-    log.write(f"Numerical-library thread limit: {ncpu}")
+    log.write(f"Numerical-library thread limit: 1")
     log.write(f"Chunk size: {chunk_size:,} target frames")
     log.write(f"Verbose progress: {'yes' if verbose else 'no'}")
     log.write(f"Write KDE CSV: {'yes' if write_kde else 'no'}")
@@ -573,6 +573,7 @@ def run_crossrmsd(
             progress=ProgressReporter(log, comparison, verbose),
             fit_weights=fit_weights,
             rmsd_weights=rmsd_weights,
+            ncpu=ncpu,
         )
         rmsd_elapsed = time.perf_counter() - calculation_started
         log.write(f"RMSD calculations finished in {rmsd_elapsed:.2f} seconds.")
@@ -681,6 +682,7 @@ def run_crossrmsd(
                 progress=ProgressReporter(log, f"{trajectory.label}_intra_aux", verbose),
                 fit_weights=fit_weights,
                 rmsd_weights=rmsd_weights,
+                ncpu=ncpu,  
             )
             if pooled_central_sums is not None:
                 add_pairwise_squared_rmsd_sums(

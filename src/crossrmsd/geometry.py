@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -82,6 +83,7 @@ def pairwise_rmsd_values(
     progress: ProgressCallback | None = None,
     fit_weights: np.ndarray | None = None,
     rmsd_weights: np.ndarray | None = None,
+    ncpu: int = 1,
 ) -> np.ndarray:
     """Compute all optimal-fit RMSDs between two frame sets.
 
@@ -100,6 +102,8 @@ def pairwise_rmsd_values(
         raise ValueError("At least one RMSD atom is required.")
     if chunk_size < 1:
         raise ValueError("chunk_size must be positive.")
+    if ncpu < 1:
+        raise ValueError("ncpu must be positive.")
     if same_object and reference_fit.shape[0] != target_fit.shape[0]:
         raise ValueError("An intra-trajectory comparison requires the same frame set.")
 
@@ -120,43 +124,81 @@ def pairwise_rmsd_values(
     chunks: list[np.ndarray] = []
     n_reference = ref_fit_centered.shape[0]
 
-    for ref_index, one_ref_fit in enumerate(ref_fit_centered):
+    def calculate_row(ref_index: int) -> np.ndarray:
         start = ref_index + 1 if same_object else 0
+
         if start >= tgt_fit_centered.shape[0]:
-            continue
+            return np.empty(0, dtype=np.float64)
+
+        one_ref_fit = ref_fit_centered[ref_index]
         one_ref_calc = ref_calc_centered[ref_index]
+        row_chunks: list[np.ndarray] = []
+
         for chunk_start in range(start, tgt_fit_centered.shape[0], chunk_size):
             chunk_stop = min(chunk_start + chunk_size, tgt_fit_centered.shape[0])
+
             rotations = kabsch_rotations_to_reference(
                 one_ref_fit,
                 tgt_fit_centered[chunk_start:chunk_stop],
                 fit_weights,
             )
+
             aligned = np.einsum(
                 "bki,bij->bkj",
                 tgt_calc_centered[chunk_start:chunk_stop],
                 rotations,
                 optimize=True,
             )
+
             delta_squared = np.sum((aligned - one_ref_calc) ** 2, axis=2)
+
             if rmsd_weights is None:
                 mean_squared = np.mean(delta_squared, axis=1)
             else:
                 mean_squared = np.average(
                     delta_squared, axis=1, weights=rmsd_weights
                 )
-            values = np.sqrt(np.maximum(mean_squared, 0.0))
-            chunks.append(values)
-            processed += values.size
-            if progress is not None:
-                progress(processed, total, ref_index + 1, n_reference)
+
+            row_chunks.append(
+                np.sqrt(np.maximum(mean_squared, 0.0))
+            )
+
+        return (
+            np.concatenate(row_chunks)
+            if len(row_chunks) > 1
+            else row_chunks[0]
+        )
+
+    def collect_rows(rows) -> None:
+        nonlocal processed
+
+        for ref_index, row_values in enumerate(rows):
+            if row_values.size:
+                chunks.append(row_values)
+                processed += row_values.size
+
+                if progress is not None:
+                    progress(
+                        processed,
+                        total,
+                        ref_index + 1,
+                        n_reference,
+                    )
+
+    if ncpu == 1 or n_reference < 2:
+        collect_rows(map(calculate_row, range(n_reference)))
+    else:
+        with ThreadPoolExecutor(max_workers=ncpu) as pool:
+            collect_rows(
+                pool.map(calculate_row, range(n_reference))
+            )
 
     if not chunks:
         return np.asarray([], dtype=np.float64)
+
     return np.concatenate(chunks)
 
 
-def summarize(values: np.ndarray) -> RmsdStats:
     """Return the compact default statistics used by the MVP."""
 
     if values.size == 0:
