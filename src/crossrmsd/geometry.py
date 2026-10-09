@@ -198,9 +198,8 @@ def pairwise_rmsd_values(
 
     return np.concatenate(chunks)
 
-
+def summarize(values: np.ndarray) -> RmsdStats:
     """Return the compact default statistics used by the MVP."""
-
     if values.size == 0:
         nan = float("nan")
         return RmsdStats(n_pairs=0, mean=nan, sd=nan, median=nan)
