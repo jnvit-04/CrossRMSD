@@ -25,6 +25,7 @@ from crossrmsd.io import (
     timestamp,
     write_kde_csv,
     write_pairwise_csv,
+    write_matrix_csv,
     write_selected_atoms_csv,
 )
 from crossrmsd.kde import gaussian_kde_curve
@@ -342,6 +343,10 @@ def _kde_output_path(primary: Path) -> Path:
     return primary.with_name(f"{primary.stem}_kde.csv")
 
 
+def _pairs_output_path(primary: Path) -> Path:
+    return primary.with_name(f"{primary.stem}_pairs.csv")
+
+
 def _xpm_output_path(primary: Path) -> Path:
     return primary.with_suffix(".xpm")
 
@@ -390,6 +395,7 @@ def run_crossrmsd(
     dry_run: bool,
     command: str,
     log: RunLog,
+    write_pairs: bool = False,
 ) -> list[ComparisonResult]:
     started = time.perf_counter()
     log.write("CrossRMSD")
@@ -444,6 +450,11 @@ def run_crossrmsd(
     path_items: list[tuple[str, Path]] = [
         (f"primary output {name}", path) for name, path in output_paths.items()
     ]
+    if write_pairs:
+        path_items.extend(
+            (f"pairwise output {name}", _pairs_output_path(path))
+            for name, path in output_paths.items()
+        )
     if write_kde:
         path_items.extend(
             (f"KDE output {name}", _kde_output_path(path))
@@ -498,7 +509,9 @@ def run_crossrmsd(
     else:
         log.write("RMSD definition: unweighted geometric RMSD")
     log.write(f"Frame stride: {stride:,}")
-    log.write("Primary CSV frame identifiers: zero-based source-frame indices")
+    log.write("Primary output: matrix CSV (rows A, columns B)")
+    log.write("Matrix row/column labels: zero-based source-frame indices")
+    log.write(f"Write optional pairwise CSV: {'yes' if write_pairs else 'no'}")
     log.write(f"Maximum CPUs: {ncpu}")
     log.write(f"Numerical-library thread limit: 1")
     log.write(f"Chunk size: {chunk_size:,} target frames")
@@ -588,8 +601,9 @@ def run_crossrmsd(
 
         post_started = time.perf_counter()
         stats = summarize(values)
-        log.write(f"Writing {stats.n_pairs:,} pairwise RMSD rows to {primary_path}...")
-        write_pairwise_csv(
+        matrix_started = time.perf_counter()
+        log.write(f"Writing {a.n_frames:,} x {b.n_frames:,} RMSD matrix to {primary_path}...")
+        write_matrix_csv(
             primary_path,
             trajectory_a=a,
             trajectory_b=b,
@@ -597,6 +611,26 @@ def run_crossrmsd(
             same_object=same_object,
             unit=unit,
         )
+        matrix_elapsed = time.perf_counter() - matrix_started
+        log.write(f"Matrix CSV export finished in {matrix_elapsed:.2f} seconds.")
+
+        pairs_name = ""
+        pairs_elapsed = 0.0
+        if write_pairs:
+            pairs_started = time.perf_counter()
+            pairs_path = _pairs_output_path(primary_path)
+            log.write(f"Writing {stats.n_pairs:,} pairwise RMSD rows to {pairs_path}...")
+            write_pairwise_csv(
+                pairs_path,
+                trajectory_a=a,
+                trajectory_b=b,
+                values=values,
+                same_object=same_object,
+                unit=unit,
+            )
+            pairs_elapsed = time.perf_counter() - pairs_started
+            pairs_name = str(pairs_path)
+            log.write(f"Pairwise CSV export finished in {pairs_elapsed:.2f} seconds.")
 
         bandwidth: float | None = None
         kde_name = ""
@@ -652,7 +686,11 @@ def run_crossrmsd(
         log.write(f"  Mean RMSD: {stats.mean:.6f} {unit_symbol}")
         log.write(f"  Median RMSD: {stats.median:.6f} {unit_symbol}")
         log.write(f"  Standard deviation: {stats.sd:.6f} {unit_symbol}")
-        log.write(f"  Pairwise data: {primary_path}")
+        log.write(f"  Matrix CSV: {primary_path}")
+        log.write(f"  Matrix CSV export time: {matrix_elapsed:.2f} seconds")
+        if pairs_name:
+            log.write(f"  Pairwise data: {pairs_name}")
+            log.write(f"  Pairwise CSV export time: {pairs_elapsed:.2f} seconds")
         if bandwidth is not None:
             log.write(f"  KDE bandwidth: {bandwidth:.6f} {unit_symbol}")
             log.write(f"  KDE data: {kde_name}")

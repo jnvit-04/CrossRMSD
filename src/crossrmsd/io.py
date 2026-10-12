@@ -195,6 +195,65 @@ def write_kde_csv(
             writer.writerow([comparison, f"{x:.8f}", f"{y:.12g}"])
 
 
+def write_matrix_csv(
+    path: Path,
+    trajectory_a: Trajectory,
+    trajectory_b: Trajectory,
+    values: np.ndarray,
+    same_object: bool,
+    unit: str,
+) -> None:
+    """Write a labeled RMSD matrix directly from the calculated pair vector.
+
+    The first row contains source-frame indices for trajectory B; the first
+    column contains source-frame indices for trajectory A. Inter-trajectory
+    values are stored in reference-major order. Intra-trajectory values use
+    the strict upper triangle (i < j); the full symmetric matrix is emitted
+    with zeros on its diagonal, without repeating any RMSD calculations.
+
+    Values are formatted to eight decimal places, like the legacy pairs CSV.
+    Rows are streamed without allocating a second full RMSD matrix.
+    """
+    n_a = trajectory_a.n_frames
+    n_b = trajectory_b.n_frames
+    expected = n_a * (n_a - 1) // 2 if same_object else n_a * n_b
+    if values.size != expected:
+        raise ValueError(
+            f"Matrix expects {expected:,} RMSD values, got {values.size:,}."
+        )
+    if same_object and n_a != n_b:
+        raise ValueError("Intra-trajectory RMSD matrix must be square.")
+
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    indices_a = trajectory_a.source_frame_indices
+    indices_b = trajectory_b.source_frame_indices
+
+    # Index of the first value in each row of the packed upper triangle.
+    if same_object:
+        frame_indices = np.arange(n_a, dtype=np.int64)
+        offsets = frame_indices * (2 * n_a - frame_indices - 1) // 2
+
+    with path.open("w", newline="", encoding="utf-8", buffering=1024 * 1024) as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["frame", *(int(idx) for idx in indices_b)])
+
+        if same_object:
+            for i, source_frame in enumerate(indices_a):
+                row = np.empty(n_a, dtype=np.float64)
+                row[i] = 0.0
+                if i:
+                    earlier = frame_indices[:i]
+                    row[:i] = values[offsets[:i] + (i - earlier - 1)]
+                if i + 1 < n_a:
+                    row[i + 1:] = values[offsets[i]:offsets[i] + n_a - i - 1]
+                writer.writerow([int(source_frame), *(f"{value:.8f}" for value in row)])
+        else:
+            matrix = values.reshape(n_a, n_b)
+            for source_frame, row in zip(indices_a, matrix):
+                writer.writerow([int(source_frame), *(f"{value:.8f}" for value in row)])
+
+
 def write_pairwise_csv(
     path: Path,
     trajectory_a: Trajectory,

@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out", required=True, type=Path, metavar="FILE",
         help=(
-            "Primary pairwise RMSD CSV. With more than one comparison, the "
+            "Primary RMSD matrix CSV. With more than one comparison, the "
             "comparison name is appended before the extension."
         ),
     )
@@ -63,7 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--kde", action="store_true",
-        help="Also write a KDE CSV derived from each pairwise RMSD output.",
+        help="Also write a KDE CSV derived from the computed RMSD values.",
+    )
+    parser.add_argument(
+        "--pairs", action="store_true",
+        help="Also write the original three-column pairwise CSV (suffix _pairs.csv).",
     )
     parser.add_argument(
         "--xpm", action="store_true",
@@ -118,6 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--centroid", dest="centroid_output", type=Path, metavar="FILE",
         help="Write an iterative generalized-Procrustes synthetic centroid to FILE.",
     )
+    # Backward-compatible no-op: matrix CSV is now the default.
+    parser.add_argument("--matrix", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Validate inputs and selections without calculating RMSDs.",
@@ -127,10 +133,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    parser.add_argument(
-        "--matrix", action="store_true",
-        help="Also write an RMSD matrix CSV.",
-    )
     args = parser.parse_args(argv)
     if args.chunk_size < 1:
         parser.error("--chunk-size must be positive.")
@@ -173,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                 mass_database=args.mass_database,
                 verbose=args.verbose,
                 write_kde=args.kde,
+                write_pairs=args.pairs,
                 write_selection=args.write_selection,
                 write_xpm=args.xpm,
                 xpm_levels=args.xpm_levels,
@@ -184,13 +187,6 @@ def main(argv: list[str] | None = None) -> int:
                 command=command,
                 log=log,
             )
-            if args.matrix and not args.dry_run:
-                from pathlib import Path
-                from crossrmsd.matrix_output import write_matrix_from_pairs
-                output = Path(args.out)
-                destination = output.with_name(f"{output.stem}_matrix.csv")
-                write_matrix_from_pairs(output, destination)
-                print(f"RMSD matrix written to {destination}")
         except (OSError, ValueError) as exc:
             log.section("Error")
             log.write(str(exc))
