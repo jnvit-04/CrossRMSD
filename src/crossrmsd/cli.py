@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ncpu", type=int, default=1,
-        help="Maximum CPU cores for readers and numerical libraries (default: 1).",
+        help="Maximum trajectory reader processes and RMSD calculation threads (default: 1).",
     )
     parser.add_argument(
         "--mass-weighted", action="store_true",
@@ -127,6 +127,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    parser.add_argument(
+        "--matrix", action="store_true",
+        help="Also write an RMSD matrix CSV.",
+    )
     args = parser.parse_args(argv)
     if args.chunk_size < 1:
         parser.error("--chunk-size must be positive.")
@@ -180,6 +184,13 @@ def main(argv: list[str] | None = None) -> int:
                 command=command,
                 log=log,
             )
+            if args.matrix and not args.dry_run:
+                from pathlib import Path
+                from crossrmsd.matrix_output import write_matrix_from_pairs
+                output = Path(args.out)
+                destination = output.with_name(f"{output.stem}_matrix.csv")
+                write_matrix_from_pairs(output, destination)
+                print(f"RMSD matrix written to {destination}")
         except (OSError, ValueError) as exc:
             log.section("Error")
             log.write(str(exc))
