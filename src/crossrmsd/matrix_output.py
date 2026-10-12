@@ -150,6 +150,8 @@ def write_matrix_from_pairs(
                     [label, *(format(v, ".17g") for v in row)]
                 )
 
+        # Release the final row view before closing the memory map.
+        del row
         del matrix
 
     return matrix_csv
