@@ -308,17 +308,23 @@ def _load_and_resolve(
     return trajectories, fit_indices, rmsd_indices, fit_atoms, rmsd_atoms
 
 
-def _comparison_plan(trajectories: list[Trajectory]) -> list[tuple[int, int, bool]]:
-    if len(trajectories) == 1:
-        if trajectories[0].n_frames < 2:
+def _comparison_plan(
+    trajectories: list[Trajectory], intra: bool = False,
+) -> list[tuple[int, int, bool]]:
+    if len(trajectories) == 1 or intra:
+        if any(trajectory.n_frames < 2 for trajectory in trajectories):
             raise ValueError(
                 "An intra-trajectory Cross-RMSD calculation requires at least 2 retained frames."
             )
+    if len(trajectories) == 1:
         return [(0, 0, True)]
-    return [
+    plan = [
         (left, right, False)
         for left, right in itertools.combinations(range(len(trajectories)), 2)
     ]
+    if intra:
+        plan.extend((index, index, True) for index in range(len(trajectories)))
+    return plan
 
 
 def _xpm_title(rmsd_expression: str) -> str:
@@ -396,6 +402,7 @@ def run_crossrmsd(
     command: str,
     log: RunLog,
     write_pairs: bool = False,
+    intra: bool = False,
 ) -> list[ComparisonResult]:
     started = time.perf_counter()
     log.write("CrossRMSD")
@@ -420,7 +427,7 @@ def run_crossrmsd(
         log=log,
     )
 
-    plan = _comparison_plan(trajectories)
+    plan = _comparison_plan(trajectories, intra=intra)
     multiple_outputs = len(plan) > 1
     output_paths: dict[str, Path] = {}
 
@@ -428,6 +435,8 @@ def run_crossrmsd(
     log.write(
         "Mode: intra-trajectory Cross-RMSD"
         if len(trajectories) == 1
+        else "Mode: inter- and intra-trajectory Cross-RMSD"
+        if intra
         else "Mode: inter-trajectory Cross-RMSD"
     )
     for left, right, same_object in plan:
@@ -701,7 +710,7 @@ def run_crossrmsd(
 
     # Multi-trajectory normal mode does not calculate intra comparisons. Exact
     # pooled central scoring needs those within-trajectory contributions as well.
-    need_auxiliary_intra = n_trajectories > 1 and central_output is not None
+    need_auxiliary_intra = n_trajectories > 1 and central_output is not None and not intra
     if need_auxiliary_intra:
         log.section("Auxiliary intra-trajectory calculations")
         for index, trajectory in enumerate(trajectories):

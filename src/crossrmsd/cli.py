@@ -42,6 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prepared multi-model PDB trajectory. Repeat for multiple trajectories.",
     )
     parser.add_argument(
+        "--intra", action="store_true",
+        help="Also calculate within-trajectory RMSDs for each input trajectory.",
+    )
+    parser.add_argument(
         "--fit", default="name CA",
         help="Readable atom selection used for rigid-body fitting (default: name CA).",
     )
@@ -176,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
                 verbose=args.verbose,
                 write_kde=args.kde,
                 write_pairs=args.pairs,
+                intra=args.intra,
                 write_selection=args.write_selection,
                 write_xpm=args.xpm,
                 xpm_levels=args.xpm_levels,
